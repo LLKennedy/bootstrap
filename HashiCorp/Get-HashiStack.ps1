@@ -39,10 +39,10 @@ Function Get-HashiCorpBinary {
 		throw "Downloaded zip for ${Product} at version ${Version} was corrupt or invalid"
 	}
 
-	$(Expand-Archive -Path "${fullProductName}.zip" -DestinationPath $fullProductName)
+	Expand-Archive -Path "${fullProductName}.zip" -DestinationPath $fullProductName -Force
 
 	$file = $(Get-ChildItem -Path $fullProductName)
-	Move-Item -Path "$fullProductName/$($file.PSChildName)" -Destination "$OutDirectory/$($file.PSChildName)"
+	Move-Item -Path "$fullProductName/$($file.PSChildName)" -Destination "$OutDirectory/$($file.PSChildName)" -Force
 	Remove-Item $fullProductName # Remove the unzipped folder now that it's empty
 	Write-Output "${Product} downloaded!"
 }
@@ -50,10 +50,10 @@ Function Get-HashiCorpBinary {
 Write-Output "Downloading HashiCorp stack..."
 
 $tools = "./HashiCorp Tools"
-
 if (!$(Test-Path $tools)) {
 	New-Item -Path $tools -ItemType "directory"
 }
+$absoluteToolPath = $(Resolve-Path -Path $tools).Path
 
 # Consul
 $ConsulVersion = "1.6.2"
@@ -64,3 +64,7 @@ Get-HashiCorpBinary -Product "consul" -Version $ConsulVersion -OSWithArch ${OSWi
 $ConsulVersion = "1.3.0"
 $OSWithArch = "windows_amd64"
 Get-HashiCorpBinary -Product "vault" -Version $ConsulVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+
+Write-Output "Temporarily adding tools to PATH"
+$pathWithTools = "$([Environment]::GetEnvironmentVariable('Path'));${absoluteToolPath}"
+[Environment]::SetEnvironmentVariable('Path', $pathWithTools)
