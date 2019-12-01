@@ -2,6 +2,19 @@
 	.Description
 	Get-HashiStack gets hashicorp tools
 #>
+Param(
+	[Parameter(Position = 0, Mandatory = $true)]
+	[String]
+	$OSWithArch,
+
+	[Parameter(Position = 1, Mandatory = $true)]
+	[String]
+	$ConsulVersion,
+
+	[Parameter(Position = 2, Mandatory = $true)]
+	[String]
+	$VaultVersion
+)
 
 Function Get-HashiCorpBinary {
 	Param(
@@ -56,14 +69,10 @@ if (!$(Test-Path $tools)) {
 $absoluteToolPath = $(Resolve-Path -Path $tools).Path
 
 # Consul
-$ConsulVersion = "1.6.2"
-$OSWithArch = "windows_amd64"
 Get-HashiCorpBinary -Product "consul" -Version $ConsulVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
 
 # Vault
-$ConsulVersion = "1.3.0"
-$OSWithArch = "windows_amd64"
-Get-HashiCorpBinary -Product "vault" -Version $ConsulVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+Get-HashiCorpBinary -Product "vault" -Version $VaultVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
 
 Write-Output "Temporarily adding tools to PATH"
 $pathWithTools = "$([Environment]::GetEnvironmentVariable('Path'));${absoluteToolPath}"
