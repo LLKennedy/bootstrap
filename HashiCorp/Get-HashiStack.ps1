@@ -3,18 +3,36 @@
 	Get-HashiStack gets hashicorp tools
 #>
 Param(
-	[Parameter(Position = 0, Mandatory = $true)]
+	[Parameter(Mandatory = $true)]
 	[String]
 	$OSWithArch,
 
-	[Parameter(Position = 1, Mandatory = $true)]
+	[Parameter(Mandatory = $false)]
 	[String]
 	$ConsulVersion,
 
-	[Parameter(Position = 2, Mandatory = $true)]
+	[Parameter(Mandatory = $false)]
 	[String]
-	$VaultVersion
+	$VaultVersion,
+
+	[Parameter(Mandatory = $false)]
+	[String]
+	$NomadVersion,
+
+	[Parameter(Mandatory = $false)]
+	[String]
+	$TerraformVersion,
+
+	[Parameter(Mandatory = $false)]
+	[String]
+	$VagrantVersion
 )
+
+$tools = "./HashiCorp Tools"
+if (!$(Test-Path $tools)) {
+	New-Item -Path $tools -ItemType "directory"
+}
+$absoluteToolPath = $(Resolve-Path -Path $tools).Path
 
 Function Get-HashiCorpBinary {
 	Param(
@@ -41,9 +59,11 @@ Function Get-HashiCorpBinary {
 	Invoke-WebRequest -Uri "https://releases.hashicorp.com/${Product}/${Version}/${fullProductName}.zip" -ErrorAction Stop -OutFile "${fullProductName}.zip"
 	$matchFound = $false
 	$fileHash = $(Get-FileHash -Algorithm SHA256 -Path "${fullProductName}.zip").Hash
+	# Write-Output "Hash is ${fileHash}"
 	ForEach ($line in $($hashData -split "\n")) { # this isn't os-specific, hashicorp always uses simple \n to separate
 		$parts = $line -split "  "
-		if ($parts[1] -eq "${Product}_${Version}_${OSWithArch}.zip" -and $parts[0] -eq $fileHash) {
+		# Write-Output "Line is ${parts}"
+		if ($parts[1] -like "*${Product}_${Version}_${OSWithArch}.zip" -and $parts[0] -eq $fileHash) {
 			$matchFound = $true
 			break
 		}
@@ -62,17 +82,35 @@ Function Get-HashiCorpBinary {
 
 Write-Output "Downloading HashiCorp stack..."
 
-$tools = "./HashiCorp Tools"
-if (!$(Test-Path $tools)) {
-	New-Item -Path $tools -ItemType "directory"
-}
-$absoluteToolPath = $(Resolve-Path -Path $tools).Path
-
 # Consul
-Get-HashiCorpBinary -Product "consul" -Version $ConsulVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+if ($null -ne $ConsulVersion -and $ConsulVersion -ne "") {
+	Get-HashiCorpBinary -Product "consul" -Version $ConsulVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+}
 
 # Vault
-Get-HashiCorpBinary -Product "vault" -Version $VaultVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+if ($null -ne $VaultVersion -and $VaultVersion -ne "") {
+	Get-HashiCorpBinary -Product "vault" -Version $VaultVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+}
+
+# Nomad
+if ($null -ne $NomadVersion -and $NomadVersion -ne "") {
+	Get-HashiCorpBinary -Product "nomad" -Version $NomadVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+}
+
+# Terraform
+if ($null -ne $TerraformVersion -and $TerraformVersion -ne "") {
+	Get-HashiCorpBinary -Product "terraform" -Version $TerraformVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+}
+
+# Vagrant
+if ($null -ne $VagrantVersion -and $VagrantVersion -ne "") {
+	Get-HashiCorpBinary -Product "vagrant" -Version $VagrantVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+}
+
+# Terraform
+if ($null -ne $TerraformVersion -and $TerraformVersion -ne "") {
+	Get-HashiCorpBinary -Product "terraform" -Version $TerraformVersion -OSWithArch ${OSWithArch} -OutDirectory $tools
+}
 
 Write-Output "Temporarily adding tools to PATH"
 $pathWithTools = "$([Environment]::GetEnvironmentVariable('Path'));${absoluteToolPath}"
