@@ -44,10 +44,14 @@ func main() {
 	for _, key := range keys {
 		client.Keys.DeleteByID(ctx, key.ID)
 	}
-
+	// Create SSH keys
+	_, rootpub, _, err := createKeys()
+	if err != nil {
+		log.Fatalln(err)
+	}
 	rootkey, _, err := client.Keys.Create(ctx, &godo.KeyCreateRequest{
 		Name:      "website-root",
-		PublicKey: string(rootsshpublic.Marshal()),
+		PublicKey: string(rootpub),
 	})
 	if err != nil {
 		log.Fatalln(err)
@@ -65,10 +69,14 @@ func main() {
 			},
 		},
 	})
-	droplet.PublicIPv4()
 	if err != nil {
 		log.Fatalln(err)
 	}
+	ip, err := droplet.PublicIPv4()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	log.Printf("IP: %s\n", ip)
 	log.Println("success")
 }
 
@@ -86,12 +94,12 @@ func genKey(name string) (*ecdsa.PrivateKey, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	privFile, err := os.Open(fmt.Sprintf("%s_ecdsa.key", name))
+	privFile, err := os.OpenFile(fmt.Sprintf("%s_ecdsa.key", name), os.O_CREATE|os.O_EXCL, os.ModeExclusive)
 	if err != nil {
 		return nil, "", err
 	}
 	defer privFile.Close()
-	pubFile, err := os.Open(fmt.Sprintf("%s_ecdsa.pub", name))
+	pubFile, err := os.OpenFile(fmt.Sprintf("%s_ecdsa.pub", name), os.O_CREATE|os.O_EXCL, os.ModeExclusive)
 	if err != nil {
 		return nil, "", err
 	}

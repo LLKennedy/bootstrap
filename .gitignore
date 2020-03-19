@@ -2,3 +2,7 @@
 *.sig
 
 *.exe
+
+*.key
+
+*.pub
