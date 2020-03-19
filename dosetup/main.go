@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/digitalocean/godo"
 	"golang.org/x/crypto/ssh"
@@ -18,6 +19,11 @@ import (
 )
 
 func main() {
+	// Create SSH keys
+	_, rootpub, _, err := createKeys()
+	if err != nil {
+		log.Fatalln(err)
+	}
 	log.Println("WARNING: This tool deletes ALL existing droplets and SSH keys the key can control, do not put your key here unless you're OK with that.")
 	fmt.Printf("API key: ")
 	apikey, err := terminal.ReadPassword(int(syscall.Stdin))
@@ -44,11 +50,6 @@ func main() {
 	for _, key := range keys {
 		client.Keys.DeleteByID(ctx, key.ID)
 	}
-	// Create SSH keys
-	_, rootpub, _, err := createKeys()
-	if err != nil {
-		log.Fatalln(err)
-	}
 	rootkey, _, err := client.Keys.Create(ctx, &godo.KeyCreateRequest{
 		Name:      "website-root",
 		PublicKey: string(rootpub),
@@ -73,6 +74,10 @@ func main() {
 		log.Fatalln(err)
 	}
 	ip, err := droplet.PublicIPv4()
+	for i := 0; i < 60 && err == nil && ip == ""; i++ {
+		time.Sleep(2 * time.Second)
+		ip, err = droplet.PublicIPv4()
+	}
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -90,16 +95,20 @@ func createKeys() (root *ecdsa.PrivateKey, rootPub string, user *ecdsa.PrivateKe
 }
 
 func genKey(name string) (*ecdsa.PrivateKey, string, error) {
+	keyName := fmt.Sprintf("%s_ecdsa.key", name)
+	pubName := fmt.Sprintf("%s_ecdsa.pub", name)
+	os.Remove(keyName)
+	os.Remove(pubName)
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
 		return nil, "", err
 	}
-	privFile, err := os.OpenFile(fmt.Sprintf("%s_ecdsa.key", name), os.O_CREATE|os.O_EXCL, os.ModeExclusive)
+	privFile, err := os.OpenFile(keyName, os.O_RDONLY|os.O_CREATE, os.ModeExclusive)
 	if err != nil {
 		return nil, "", err
 	}
 	defer privFile.Close()
-	pubFile, err := os.OpenFile(fmt.Sprintf("%s_ecdsa.pub", name), os.O_CREATE|os.O_EXCL, os.ModeExclusive)
+	pubFile, err := os.OpenFile(pubName, os.O_RDWR|os.O_CREATE, os.ModeExclusive)
 	if err != nil {
 		return nil, "", err
 	}
@@ -109,7 +118,7 @@ func genKey(name string) (*ecdsa.PrivateKey, string, error) {
 		return nil, "", err
 	}
 	privBlock := pem.Block{
-		Type:    "ECDSA PRIVATE KEY",
+		Type:    "EC PRIVATE KEY",
 		Headers: nil,
 		Bytes:   privDer,
 	}
@@ -117,13 +126,14 @@ func genKey(name string) (*ecdsa.PrivateKey, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	pubBytes, err := ssh.NewPublicKey(key)
+	sshPub, err := ssh.NewPublicKey(key.Public())
 	if err != nil {
 		return nil, "", err
 	}
-	_, err = pubFile.Write(pubBytes.Marshal())
+	pubBytes := ssh.MarshalAuthorizedKey(sshPub)
+	_, err = pubFile.Write(pubBytes)
 	if err != nil {
 		return nil, "", err
 	}
-	return key, string(pubBytes.Marshal()), nil
+	return key, string(pubBytes), nil
 }
