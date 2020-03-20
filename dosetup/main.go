@@ -8,44 +8,55 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/digitalocean/godo"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/terminal"
 )
 
 func main() {
-	// Create SSH keys
-	_, rootpub, _, err := createKeys()
+	err := runscript()
 	if err != nil {
 		log.Fatalln(err)
+	}
+}
+
+func runscript() error {
+	// Create SSH keys
+	root, rootpub, _, err := createKeys()
+	if err != nil {
+		return err
 	}
 	log.Println("WARNING: This tool deletes ALL existing droplets and SSH keys the key can control, do not put your key here unless you're OK with that.")
 	fmt.Printf("API key: ")
 	apikey, err := terminal.ReadPassword(int(syscall.Stdin))
 	fmt.Printf("\n")
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	client := godo.NewFromToken(string(apikey))
 	ctx := context.Background()
 	droplets, _, err := client.Droplets.List(ctx, &godo.ListOptions{})
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	for _, droplet := range droplets {
 		_, err = client.Droplets.Delete(ctx, droplet.ID)
 		if err != nil {
-			log.Println(err)
+			return err
 		}
 	}
 	keys, _, err := client.Keys.List(ctx, &godo.ListOptions{})
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	for _, key := range keys {
 		client.Keys.DeleteByID(ctx, key.ID)
@@ -55,7 +66,7 @@ func main() {
 		PublicKey: string(rootpub),
 	})
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	droplet, _, err := client.Droplets.Create(ctx, &godo.DropletCreateRequest{
 		Name:   "website",
@@ -71,18 +82,121 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
-	ip, err := droplet.PublicIPv4()
-	for i := 0; i < 60 && err == nil && ip == ""; i++ {
-		time.Sleep(2 * time.Second)
-		ip, err = droplet.PublicIPv4()
+	log.Println("Waiting up to 1 minute for droplet creation...")
+	deadline := time.Now().Add(time.Minute)
+	ip, err := droplet.PrivateIPv4()
+	for err == nil && ip == "" && deadline.After(time.Now()) {
+		time.Sleep(5 * time.Second)
+		ip, _ = droplet.PublicIPv4()
+		droplet, _, err = client.Droplets.Get(ctx, droplet.ID)
 	}
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
-	log.Printf("IP: %s\n", ip)
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:22", ip))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	keyring := agent.NewKeyring()
+	keyring.Add(agent.AddedKey{
+		PrivateKey: root,
+	})
+	keyringSigners, err := keyring.Signers()
+	if err != nil {
+		return err
+	}
+	sshclient, err := ssh.Dial("tcp", fmt.Sprintf("%s:22", ip), &ssh.ClientConfig{
+		Config: ssh.Config{},
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(keyringSigners...),
+		},
+		User:            "root",
+		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil },
+	})
+	if err != nil {
+		return err
+	}
+	defer sshclient.Close()
+	commands := []string{
+		"pwd",
+		"ls",
+		"mkdir stuff",
+		"ls",
+		"rm -r stuff",
+		"ls",
+	}
+	runCommand := func(command string, stdin []byte) error {
+		sess, err := sshclient.NewSession()
+		if err != nil {
+			return err
+		}
+		defer sess.Close()
+		var stdout, stderr []byte
+		workers := sync.WaitGroup{}
+		workers.Add(3)
+		commandStart := sync.WaitGroup{}
+		commandStart.Add(1)
+		go func() {
+			defer func() {
+				recover()
+				workers.Done()
+			}()
+			outPipe, _ := sess.StdoutPipe()
+			commandStart.Wait()
+			stdout, _ = ioutil.ReadAll(outPipe)
+		}()
+		go func() {
+			defer func() {
+				recover()
+				workers.Done()
+			}()
+			errPipe, _ := sess.StdoutPipe()
+			commandStart.Wait()
+			stderr, _ = ioutil.ReadAll(errPipe)
+		}()
+		go func() {
+			defer func() {
+				recover()
+				workers.Done()
+			}()
+			inPipe, _ := sess.StdinPipe()
+			commandStart.Wait()
+			for _, b := range stdin {
+				inPipe.Write([]byte{b})
+			}
+			inPipe.Close()
+		}()
+		log.Printf("Running command: %s", command)
+		commandDone := sync.WaitGroup{}
+		commandDone.Add(1)
+		commandStart.Done()
+		go func() {
+			defer func() {
+				recover()
+				commandDone.Done()
+			}()
+			err = sess.Run(command)
+		}()
+		workers.Wait()
+		commandDone.Wait()
+		if err != nil {
+			return fmt.Errorf("ssh error: %w with (stdout: %s) and (stderr: %s)", err, stdout, stderr)
+		}
+		log.Printf("%s", stdout)
+		return nil
+	}
+	for _, command := range commands {
+		err := runCommand(command, nil)
+		if err != nil {
+			return err
+		}
+	}
+
 	log.Println("success")
+	return nil
 }
 
 func createKeys() (root *ecdsa.PrivateKey, rootPub string, user *ecdsa.PrivateKey, err error) {
