@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -31,7 +32,17 @@ func main() {
 
 func runscript() error {
 	// Create SSH keys
-	root, rootpub, _, err := createKeys()
+	root, _, rootpub, _, err := loadKeys()
+	if err != nil {
+		err = createKeys()
+		if err != nil {
+			return err
+		}
+		root, _, rootpub, _, err = loadKeys()
+		if err != nil {
+			return err
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -199,37 +210,37 @@ func runscript() error {
 	return nil
 }
 
-func createKeys() (root *ecdsa.PrivateKey, rootPub string, user *ecdsa.PrivateKey, err error) {
-	root, rootPub, err = genKey("root")
+func createKeys() (err error) {
+	err = genKey("root")
 	if err != nil {
 		return
 	}
-	user, _, err = genKey("user")
+	err = genKey("user")
 	return
 }
 
-func genKey(name string) (*ecdsa.PrivateKey, string, error) {
+func genKey(name string) error {
 	keyName := fmt.Sprintf("%s_ecdsa.key", name)
 	pubName := fmt.Sprintf("%s_ecdsa.pub", name)
 	os.Remove(keyName)
 	os.Remove(pubName)
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
 	privFile, err := os.OpenFile(keyName, os.O_RDONLY|os.O_CREATE, os.ModeExclusive)
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
 	defer privFile.Close()
 	pubFile, err := os.OpenFile(pubName, os.O_RDWR|os.O_CREATE, os.ModeExclusive)
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
 	defer pubFile.Close()
 	privDer, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
 	privBlock := pem.Block{
 		Type:    "EC PRIVATE KEY",
@@ -238,16 +249,56 @@ func genKey(name string) (*ecdsa.PrivateKey, string, error) {
 	}
 	err = pem.Encode(privFile, &privBlock)
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
 	sshPub, err := ssh.NewPublicKey(key.Public())
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
 	pubBytes := ssh.MarshalAuthorizedKey(sshPub)
 	_, err = pubFile.Write(pubBytes)
 	if err != nil {
-		return nil, "", err
+		return nil
 	}
-	return key, string(pubBytes), nil
+	return nil
+}
+
+func loadKeys() (root, user *ecdsa.PrivateKey, rootPub, userPub string, err error) {
+	root, rootPub, err = loadKey("root")
+	if err != nil {
+		return
+	}
+	user, userPub, err = loadKey("user")
+	return
+}
+
+func loadKey(name string) (key *ecdsa.PrivateKey, pub string, err error) {
+	var privFile, pubFile []byte
+	privFile, err = ioutil.ReadFile(fmt.Sprintf("%s_ecdsa.key", name))
+	if err != nil {
+		return
+	}
+	pubFile, err = ioutil.ReadFile(fmt.Sprintf("%s_ecdsa.pub", name))
+	if err != nil {
+		return
+	}
+
+	block, _ := pem.Decode(privFile)
+	if block == nil {
+		err = fmt.Errorf("no pem blocks found for %s key", name)
+		return
+	}
+	var genericKey crypto.PrivateKey
+	genericKey, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return
+	}
+	var ok bool
+	key, ok = genericKey.(*ecdsa.PrivateKey)
+	if !ok {
+		err = fmt.Errorf("non-ecdsa private key for %s key", name)
+		return
+	}
+	pub = string(pubFile)
+	return
 }
