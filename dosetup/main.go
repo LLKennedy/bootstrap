@@ -159,69 +159,8 @@ func runscript() error {
 		`chown web:web /home/web/.ssh`,
 		`chown web:web /home/web/.ssh/authorized_keys`,
 	}
-	runCommand := func(command string, stdin []byte) error {
-		sess, err := sshclient.NewSession()
-		if err != nil {
-			log.Println("failed to create ssh session")
-			return err
-		}
-		defer sess.Close()
-		log.Printf("Running command: %s", command)
-		var stdout, stderr []byte
-		workers := sync.WaitGroup{}
-		workers.Add(3)
-		commandStart := sync.WaitGroup{}
-		commandStart.Add(1)
-		go func() {
-			defer func() {
-				recover()
-				workers.Done()
-			}()
-			outPipe, _ := sess.StdoutPipe()
-			commandStart.Wait()
-			stdout, _ = ioutil.ReadAll(outPipe)
-		}()
-		go func() {
-			defer func() {
-				recover()
-				workers.Done()
-			}()
-			errPipe, _ := sess.StdoutPipe()
-			commandStart.Wait()
-			stderr, _ = ioutil.ReadAll(errPipe)
-		}()
-		go func() {
-			defer func() {
-				recover()
-				workers.Done()
-			}()
-			inPipe, _ := sess.StdinPipe()
-			commandStart.Wait()
-			for _, b := range stdin {
-				inPipe.Write([]byte{b})
-			}
-			inPipe.Close()
-		}()
-		commandDone := sync.WaitGroup{}
-		commandDone.Add(1)
-		commandStart.Done()
-		go func() {
-			defer func() {
-				recover()
-				commandDone.Done()
-			}()
-			err = sess.Run(command)
-		}()
-		workers.Wait()
-		commandDone.Wait()
-		if err != nil {
-			return fmt.Errorf("ssh error: %w with (stdout: %s) and (stderr: %s)", err, stdout, stderr)
-		}
-		log.Printf("%s", stdout)
-		return nil
-	}
 	for _, command := range commands {
-		err := runCommand(command, nil)
+		err := runCommand(sshclient, command, nil)
 		if err != nil {
 			log.Printf("failed to run ssh command: %s", command)
 			return err
@@ -229,6 +168,68 @@ func runscript() error {
 	}
 
 	log.Println("success")
+	return nil
+}
+
+func runCommand(sshclient *ssh.Client, command string, stdin []byte) error {
+	sess, err := sshclient.NewSession()
+	if err != nil {
+		log.Println("failed to create ssh session")
+		return err
+	}
+	defer sess.Close()
+	log.Printf("Running command: %s", command)
+	var stdout, stderr []byte
+	workers := sync.WaitGroup{}
+	workers.Add(3)
+	commandStart := sync.WaitGroup{}
+	commandStart.Add(1)
+	go func() {
+		defer func() {
+			recover()
+			workers.Done()
+		}()
+		outPipe, _ := sess.StdoutPipe()
+		commandStart.Wait()
+		stdout, _ = ioutil.ReadAll(outPipe)
+	}()
+	go func() {
+		defer func() {
+			recover()
+			workers.Done()
+		}()
+		errPipe, _ := sess.StdoutPipe()
+		commandStart.Wait()
+		stderr, _ = ioutil.ReadAll(errPipe)
+	}()
+	go func() {
+		defer func() {
+			recover()
+			workers.Done()
+		}()
+		inPipe, _ := sess.StdinPipe()
+		commandStart.Wait()
+		for _, b := range stdin {
+			inPipe.Write([]byte{b})
+		}
+		inPipe.Close()
+	}()
+	commandDone := sync.WaitGroup{}
+	commandDone.Add(1)
+	commandStart.Done()
+	go func() {
+		defer func() {
+			recover()
+			commandDone.Done()
+		}()
+		err = sess.Run(command)
+	}()
+	workers.Wait()
+	commandDone.Wait()
+	if err != nil {
+		return fmt.Errorf("ssh error: %w with (stdout: %s) and (stderr: %s)", err, stdout, stderr)
+	}
+	log.Printf("%s", stdout)
 	return nil
 }
 
