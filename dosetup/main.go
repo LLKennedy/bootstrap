@@ -80,11 +80,11 @@ func runscript() error {
 		return err
 	}
 	droplet, _, err := client.Droplets.Create(ctx, &godo.DropletCreateRequest{
-		Name:   "website",
+		Name:   "lukekennedynet",
 		Region: "nyc3",
 		Size:   "s-1vcpu-1gb",
 		Image: godo.DropletCreateImage{
-			Slug: "ubuntu-14-04-x64",
+			Slug: "ubuntu-18-04-x64",
 		},
 		SSHKeys: []godo.DropletCreateSSHKey{
 			{
@@ -106,6 +106,7 @@ func runscript() error {
 	if err != nil {
 		return err
 	}
+	log.Printf("new IP: %s", ip)
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:22", ip))
 	if err != nil {
 		return err
@@ -131,13 +132,9 @@ func runscript() error {
 		return err
 	}
 	defer sshclient.Close()
+	// Put script commands here
 	commands := []string{
-		"pwd",
-		"ls",
-		"mkdir stuff",
-		"ls",
-		"rm -r stuff",
-		"ls",
+		`adduser --disabled-password --gecos "" web`,
 	}
 	runCommand := func(command string, stdin []byte) error {
 		sess, err := sshclient.NewSession()
