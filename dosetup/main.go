@@ -32,51 +32,59 @@ func main() {
 
 func runscript() error {
 	// Create SSH keys
-	root, _, rootpub, _, err := loadKeys()
+	root, _, rootpub, userpub, err := loadKeys()
 	if err != nil {
 		err = createKeys()
 		if err != nil {
+			log.Println("failed to create keys")
 			return err
 		}
 		root, _, rootpub, _, err = loadKeys()
 		if err != nil {
+			log.Println("failed to load keys from files")
 			return err
 		}
-	}
-	if err != nil {
-		return err
 	}
 	log.Println("WARNING: This tool deletes ALL existing droplets and SSH keys the key can control, do not put your key here unless you're OK with that.")
 	fmt.Printf("API key: ")
 	apikey, err := terminal.ReadPassword(int(syscall.Stdin))
 	fmt.Printf("\n")
 	if err != nil {
+		log.Println("failed to read api key from user input")
 		return err
 	}
 	client := godo.NewFromToken(string(apikey))
 	ctx := context.Background()
 	droplets, _, err := client.Droplets.List(ctx, &godo.ListOptions{})
 	if err != nil {
+		log.Println("failed to list droplets")
 		return err
 	}
 	for _, droplet := range droplets {
 		_, err = client.Droplets.Delete(ctx, droplet.ID)
 		if err != nil {
+			log.Println("failed to delete droplet")
 			return err
 		}
 	}
 	keys, _, err := client.Keys.List(ctx, &godo.ListOptions{})
 	if err != nil {
+		log.Println("failed to list keys")
 		return err
 	}
 	for _, key := range keys {
-		client.Keys.DeleteByID(ctx, key.ID)
+		_, err = client.Keys.DeleteByID(ctx, key.ID)
+		if err != nil {
+			log.Println("failed to delete key")
+			return err
+		}
 	}
 	rootkey, _, err := client.Keys.Create(ctx, &godo.KeyCreateRequest{
 		Name:      "website-root",
 		PublicKey: string(rootpub),
 	})
 	if err != nil {
+		log.Println("failed to create key")
 		return err
 	}
 	droplet, _, err := client.Droplets.Create(ctx, &godo.DropletCreateRequest{
@@ -93,6 +101,7 @@ func runscript() error {
 		},
 	})
 	if err != nil {
+		log.Println("faled to create droplet")
 		return err
 	}
 	log.Println("Waiting up to 1 minute for droplet creation...")
@@ -104,22 +113,20 @@ func runscript() error {
 		droplet, _, err = client.Droplets.Get(ctx, droplet.ID)
 	}
 	if err != nil {
+		log.Println("failed to get public IP for new droplet")
 		return err
 	}
 	log.Printf("new IP: %s", ip)
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:22", ip))
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
 	keyring := agent.NewKeyring()
 	keyring.Add(agent.AddedKey{
 		PrivateKey: root,
 	})
 	keyringSigners, err := keyring.Signers()
 	if err != nil {
+		log.Println("failed to generate keyring")
 		return err
 	}
+	time.Sleep(5 * time.Second)
 	sshclient, err := ssh.Dial("tcp", fmt.Sprintf("%s:22", ip), &ssh.ClientConfig{
 		Config: ssh.Config{},
 		Auth: []ssh.AuthMethod{
@@ -129,19 +136,37 @@ func runscript() error {
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil },
 	})
 	if err != nil {
+		log.Println("failed to create ssh client")
 		return err
 	}
 	defer sshclient.Close()
+	testSession, err := sshclient.NewSession()
+	if err != nil {
+		log.Printf("First session failed to open with error: %v", err)
+		log.Println("Waiting 10s before retrying...")
+		testSession, err = sshclient.NewSession()
+		if err != nil {
+			log.Println("couldn't establish ssh session")
+			return err
+		}
+	}
+	testSession.Close()
 	// Put script commands here
 	commands := []string{
 		`adduser --disabled-password --gecos "" web`,
+		`mkdir /home/web/.ssh`,
+		fmt.Sprintf(`echo "%s" > /home/web/.ssh/authorized_keys`, userpub),
+		`chown web:web /home/web/.ssh`,
+		`chown web:web /home/web/.ssh/authorized_keys`,
 	}
 	runCommand := func(command string, stdin []byte) error {
 		sess, err := sshclient.NewSession()
 		if err != nil {
+			log.Println("failed to create ssh session")
 			return err
 		}
 		defer sess.Close()
+		log.Printf("Running command: %s", command)
 		var stdout, stderr []byte
 		workers := sync.WaitGroup{}
 		workers.Add(3)
@@ -177,7 +202,6 @@ func runscript() error {
 			}
 			inPipe.Close()
 		}()
-		log.Printf("Running command: %s", command)
 		commandDone := sync.WaitGroup{}
 		commandDone.Add(1)
 		commandStart.Done()
@@ -199,6 +223,7 @@ func runscript() error {
 	for _, command := range commands {
 		err := runCommand(command, nil)
 		if err != nil {
+			log.Printf("failed to run ssh command: %s", command)
 			return err
 		}
 	}
