@@ -79,6 +79,20 @@ func runscript() error {
 			return err
 		}
 	}
+	records, _, err := client.Domains.Records(ctx, "lukekennedy.net", &godo.ListOptions{})
+	if err != nil {
+		log.Println("failed to list domain records")
+		return err
+	}
+	for _, record := range records {
+		if record.Type == "A" || record.Type == "AAAA" {
+			_, err = client.Domains.DeleteRecord(ctx, "lukekennedy.net", record.ID)
+			if err != nil {
+				log.Println("failed to delete domain record")
+				return err
+			}
+		}
+	}
 	rootkey, _, err := client.Keys.Create(ctx, &godo.KeyCreateRequest{
 		Name:      "website-root",
 		PublicKey: string(rootpub),
@@ -99,6 +113,7 @@ func runscript() error {
 				ID: rootkey.ID,
 			},
 		},
+		IPv6: true,
 	})
 	if err != nil {
 		log.Println("faled to create droplet")
@@ -117,6 +132,42 @@ func runscript() error {
 		return err
 	}
 	log.Printf("new IP: %s", ip)
+	ip6, _ := droplet.PublicIPv6()
+	newRecords := []*godo.DomainRecordEditRequest{
+		&godo.DomainRecordEditRequest{
+			Type: "A",
+			Name: "@",
+
+			Data: ip,
+		},
+		&godo.DomainRecordEditRequest{
+			Type: "A",
+			Name: "*",
+			Data: ip,
+		},
+	}
+	ip6Records := []*godo.DomainRecordEditRequest{
+		&godo.DomainRecordEditRequest{
+			Type: "AAAA",
+			Name: "@",
+			Data: ip6,
+		},
+		&godo.DomainRecordEditRequest{
+			Type: "AAAA",
+			Name: "*",
+			Data: ip6,
+		},
+	}
+	if ip6 != "" {
+		newRecords = append(newRecords, ip6Records...)
+	}
+	for _, record := range newRecords {
+		_, _, err = client.Domains.CreateRecord(ctx, "lukekennedy.net", record)
+		if err != nil {
+			log.Println("failed to create domain record")
+			return err
+		}
+	}
 	keyring := agent.NewKeyring()
 	keyring.Add(agent.AddedKey{
 		PrivateKey: root,
@@ -136,8 +187,20 @@ func runscript() error {
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil },
 	})
 	if err != nil {
-		log.Println("failed to create ssh client")
-		return err
+		log.Println("failed first ssh client creation attempt, sleeping before trying again")
+		time.Sleep(5 * time.Second)
+		sshclient, err = ssh.Dial("tcp", fmt.Sprintf("%s:22", ip), &ssh.ClientConfig{
+			Config: ssh.Config{},
+			Auth: []ssh.AuthMethod{
+				ssh.PublicKeys(keyringSigners...),
+			},
+			User:            "root",
+			HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil },
+		})
+		if err != nil {
+			log.Println("failed to create ssh client")
+			return err
+		}
 	}
 	defer sshclient.Close()
 	testSession, err := sshclient.NewSession()
@@ -158,11 +221,24 @@ func runscript() error {
 		fmt.Sprintf(`echo "%s" > /home/web/.ssh/authorized_keys`, userpub),
 		`chown web:web /home/web/.ssh`,
 		`chown web:web /home/web/.ssh/authorized_keys`,
+		`usermod -aG sudo web`,
+		`echo "web ALL=NOPASSWD:/sbin/reboot" >> /etc/sudoers.d/web`,
+		`apt-get -y update`,
+		`apt-get -y install software-properties-common`,
+		`add-apt-repository -y universe`,
+		`add-apt-repository -y ppa:certbot/certbot`,
+		`apt-get -y update`,
+		`apt-get -y install certbot`,
+		`apt-get -y install python3-certbot-dns-digitalocean`,
+		`mkdir /etc/digitaloceans`,
+		fmt.Sprintf(`echo "dns_digitalocean_token = %s" >> /etc/digitaloceans/api.ini`, apikey),
+		// `certbot certonly --dns-digitalocean --dns-digitalocean-credentials /etc/digitaloceans/api.ini --dns-digitalocean-propagation-seconds 60 -d lukekennedy.net -d *.lukekennedy.net -m mail@lukekennedy.net --noninteractive --agree-tos`,
+		// `sed -i "s/^PermitRootLogin yes*$/PermitRootLogin no/" /etc/ssh/sshd_config`, // This locks root out of the server, this makes unrestricted root impossible without rebuilding from scratch
 	}
 	for _, command := range commands {
 		err := runCommand(sshclient, command, nil)
 		if err != nil {
-			log.Printf("failed to run ssh command: %s", command)
+			log.Println("failed to run ssh command")
 			return err
 		}
 	}
@@ -178,7 +254,7 @@ func runCommand(sshclient *ssh.Client, command string, stdin []byte) error {
 		return err
 	}
 	defer sess.Close()
-	log.Printf("Running command: %s", command)
+	//log.Printf("Running command: %s", command)
 	var stdout, stderr []byte
 	workers := sync.WaitGroup{}
 	workers.Add(3)
